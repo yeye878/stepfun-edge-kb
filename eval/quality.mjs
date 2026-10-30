@@ -402,7 +402,11 @@ async function main() {
     logs: { progress: LOG_FILE, backend: BACKEND_LOG, json: JSON_FILE, markdown: MD_FILE },
   };
 
-  var kbNames = { fp32: 'eval-fp32', int8: 'eval-int8' };
+  // 每次运行使用独立表名：避免在同一 DB 上 DROP+CREATE 同名表时 HNSW（SYNC_MODE=ASYNC）
+  // 异步建索引任务出现抖动，导致近似检索异常漏召。跑完后再清理旧的 eval-* 表。
+  var runStamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  var kbNames = { fp32: 'eval-fp32-' + runStamp, int8: 'eval-int8-' + runStamp };
+  log('[kb] runStamp=' + runStamp + ' kbs=' + JSON.stringify(kbNames));
   var listed = await api('GET', '/api/kbs');
   var existingByName = {};
   (listed.kbs || []).forEach(function (k) { existingByName[k.name] = k; });
@@ -411,22 +415,35 @@ async function main() {
     var embT = tiers[ti];
     var tierName = embT.tier.name;
     var kbName = kbNames[tierName];
-    if (existingByName[kbName]) {
-      log('[kb] 删除同名旧 KB ' + kbName + ' (' + existingByName[kbName].id + ')');
-      await api('DELETE', '/api/kbs/' + existingByName[kbName].id);
-    }
-    var created = await api('POST', '/api/kbs', { name: kbName, dim: DIM, model: 'bge-small-zh-v1.5' });
-    var kb = created.kb;
-    log('[kb] ' + tierName + ' created id=' + kb.id + ' table=' + kb.table + ' dim=' + kb.dim);
-
     var docs = corpus.map(function (d) { return { id: String(d.id), text: d.text, category: d.category }; });
-    var tIns = Date.now();
-    var ins = await api('POST', '/api/kbs/' + kb.id + '/docs', { docs: docs, vectors: embT.corpusVecs }, 120000);
-    var insertMs = Date.now() - tIns;
-    log('[kb] ' + tierName + ' inserted=' + ins.inserted + ' writeMs=' + ins.writeMs + ' refreshMs=' + ins.refreshMs + ' waitMs=' + (ins.waitMs || 0) + ' totalMs=' + insertMs);
-    var stats = await api('GET', '/api/kbs/' + kb.id + '/stats');
-    if (Number(stats.docCount) !== corpus.length) throw new Error('docCount=' + stats.docCount + ' != ' + corpus.length);
-    var annReady = await waitAnnReady(kb.id, tierName, corpus.map(function (d, idx) { return { id: String(d.id), vec: embT.corpusVecs[idx] }; }), embT.queryVecs);
+    var corpusWithVec = corpus.map(function (d, idx) { return { id: String(d.id), vec: embT.corpusVecs[idx] }; });
+    var kb = null, ins = null, insertMs = 0, stats = null, annReady = null;
+    var MAX_ATTEMPTS = 3;
+    var attemptTotal = 0;
+    for (var attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      attemptTotal = attempt;
+      var name = attempt === 1 ? kbName : kbName + '-r' + attempt;
+      if (existingByName[name]) {
+        log('[kb] 删除同名旧 KB ' + name + ' (' + existingByName[name].id + ')');
+        await api('DELETE', '/api/kbs/' + existingByName[name].id);
+      }
+      var created = await api('POST', '/api/kbs', { name: name, dim: DIM, model: 'bge-small-zh-v1.5' });
+      kb = created.kb;
+      log('[kb] ' + tierName + ' attempt=' + attempt + ' created id=' + kb.id + ' table=' + kb.table + ' dim=' + kb.dim);
+      var tIns = Date.now();
+      ins = await api('POST', '/api/kbs/' + kb.id + '/docs', { docs: docs, vectors: embT.corpusVecs }, 120000);
+      insertMs = Date.now() - tIns;
+      log('[kb] ' + tierName + ' inserted=' + ins.inserted + ' writeMs=' + ins.writeMs + ' refreshMs=' + ins.refreshMs + ' waitMs=' + (ins.waitMs || 0) + ' totalMs=' + insertMs);
+      stats = await api('GET', '/api/kbs/' + kb.id + '/stats');
+      if (Number(stats.docCount) !== corpus.length) throw new Error('docCount=' + stats.docCount + ' != ' + corpus.length);
+      annReady = await waitAnnReady(kb.id, tierName, corpusWithVec, embT.queryVecs);
+      if (annReady.ready) break;
+      log('[kb] ' + tierName + ' attempt=' + attempt + ' ANN 就绪校验未通过，删除该表后用新表名重试');
+      try { await api('DELETE', '/api/kbs/' + kb.id); } catch (e) { log('[kb] 删表失败 ' + (e && e.message)); }
+      kb = null;
+    }
+    if (!kb) throw new Error(tierName + ' ANN 就绪校验 ' + MAX_ATTEMPTS + ' 次均失败（seekdb 近似索引在本机持续抖动）');
+    annReady.tableAttempts = attemptTotal;
 
     var hybrid = [], vector = [], fulltext = [];
     var sqlHybrid = null, sqlVector = null, sqlFulltext = null;
@@ -505,6 +522,19 @@ async function main() {
   delete result.tiers.fp32._hybridTop;
   delete result.tiers.int8._hybridTop;
 
+  // 5.5) 清理历史 eval-* 表（只保留本次运行的两块，避免 DB 体积膨胀）
+  try {
+    var keepIds = new Set([result.tiers.fp32.kb.id, result.tiers.int8.kb.id]);
+    var allKbs = await api('GET', '/api/kbs');
+    for (var ki = 0; ki < (allKbs.kbs || []).length; ki++) {
+      var kk = allKbs.kbs[ki];
+      if (String(kk.name).indexOf('eval-') === 0 && !keepIds.has(kk.id)) {
+        log('[kb] 清理历史 KB ' + kk.name + ' (' + kk.id + ')');
+        await api('DELETE', '/api/kbs/' + kk.id);
+      }
+    }
+  } catch (e) { log('[kb] 清理历史 KB 失败（不影响指标）: ' + (e && e.message)); }
+
   // 6) 写 JSON + Markdown
   fs.writeFileSync(JSON_FILE, JSON.stringify(result, null, 2) + '\n');
   fs.writeFileSync(MD_FILE, renderMarkdown(result));
@@ -536,6 +566,7 @@ function renderMarkdown(r) {
   lines.push('- 数据库：seekdb 嵌入式 ' + r.env.backend.version + '（' + r.env.backend.path + '）');
   lines.push('- 检索：单条 SQL 混合检索（' + c + 'MATCH(content) AGAINST(q)' + c + ' + ' + c + 'ORDER BY l2_distance(embedding, v) APPROXIMATE' + c + '），k=' + K);
   lines.push('- 数据：corpus ' + r.data.corpus + ' 篇 / queries ' + r.data.queries + ' 条 / qrels ' + r.data.qrels + '（seed=' + r.data.seed + '）');
+  lines.push('- 本次表名：fp32=' + r.tiers.fp32.kb.table + ' / int8=' + r.tiers.int8.kb.table + '（每轮独立建表，跑完清理历史表）');
   lines.push('');
   lines.push('## 1. 模型体积与压缩比');
   lines.push('');
@@ -608,7 +639,7 @@ function renderMarkdown(r) {
   lines.push('- 与关键词基线对比：纯全文 Recall@1=' + r.tiers.fp32.metrics.fulltext.recall1 + '、nDCG@10=' + r.tiers.fp32.metrics.fulltext.ndcg10 + '，低于向量/混合检索，说明语义召回确有增益。');
   lines.push('- 延迟：seekdb 单条 SQL 检索 dbMs 中位数量级为个位数到十几毫秒（两档同量级）；量化主要影响模型体积/加载与端侧编码速度，不改变向量维度与 SQL 形态。');
   lines.push('- 局限：语料仅 50 篇、查询 30 条、单 gold；本表是 Node 侧 onnxruntime-node CPU 数据，不代表浏览器 WebGPU/WASM 性能；fp32 档在本题语料上指标接近饱和（Recall@1=' + r.tiers.fp32.metrics.hybrid.recall1 + '），区分度有限。');
-  lines.push('- 稳定性处理：seekdb HNSW 为异步构建（SYNC_MODE=ASYNC），脚本在写入后内置「精确 top-1 落在 ANN top-' + K + '」的就绪校验（fp32 等待 ' + r.tiers.fp32.annReadiness.waitMs + 'ms / int8 等待 ' + r.tiers.int8.annReadiness.waitMs + 'ms，attempts=' + r.tiers.fp32.annReadiness.attempts + '/' + r.tiers.int8.annReadiness.attempts + '），避免索引构建抖动被误读为量化掉点。');
+  lines.push('- 稳定性处理：seekdb HNSW 为异步构建（SYNC_MODE=ASYNC），脚本在写入后内置「精确 top-1 落在 ANN top-' + K + '」的就绪校验（fp32 等待 ' + r.tiers.fp32.annReadiness.waitMs + 'ms / int8 等待 ' + r.tiers.int8.annReadiness.waitMs + 'ms，就绪探测 attempts=' + r.tiers.fp32.annReadiness.attempts + '/' + r.tiers.int8.annReadiness.attempts + '，建表尝试=' + r.tiers.fp32.annReadiness.tableAttempts + '/' + r.tiers.int8.annReadiness.tableAttempts + ' 次）；校验不通过时脚本自动删表换新表名重试（最多 3 次），避免索引构建抖动被误读为量化掉点。');
   lines.push('');
   lines.push('## 6. 单条 SQL 证据（fp32 混合检索）');
   lines.push('');

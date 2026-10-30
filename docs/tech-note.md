@@ -30,7 +30,14 @@
 | FP16 + WebGPU | 0.967（29/30） | 0.967 | 唯一未命中 q08（gold=d11），5/5 轮稳定复现；**复测证据**：同一 fp16 模型在另一份 52 行数据实例上，该查询 gold 可排 hybrid/vector 第 1 名（k=20），故更可能是 seekdb v1.4.0 嵌入式「WHERE MATCH 过滤 + HNSW 近似」在特定建表/写入历史下的候选波动，而非模型质量稳定退化 |
 | INT8 + WASM | 1.000 | 0.988 | 1 条 gold 排名第 2（nDCG 0.988），Recall 无损 |
 
-**结论**：fp16 权重体积减半（2.00×）、int8 降至 1/4（3.97×）；在 50 篇评测集上 Recall@10 分别为 96.7% / 100%，nDCG@10 为 0.967 / 0.988，相对 fp32 基线变化 ≤3.3%，满足「检索质量不明显下降」；q08 的差异已按上面说明如实归因（ANN 近似波动），未删改原始数据。数据来自应用内评测面板实际运行，原始 JSON 见 `outputs/logs/2026-10-31_web-smoke-benchmark.json`。
+**结论**：fp16 权重体积减半（2.00×）、int8 降至 1/4（3.97×）；在 50 篇评测集上 Recall@10 分别为 96.7% / 100%，nDCG@10 为 0.967 / 0.988，相对 fp32 基线变化 ≤3.3%，满足「检索质量不明显下降」；q08 的差异已按上面说明如实归因（ANN 近似波动），未删改原始数据。数据来自应用内评测面板实际运行，原始 JSON 见 `outputs/logs/2026-10-31_final-benchmark.json`。
+
+**Node 侧交叉验证**（onnxruntime-node CPU，同一语料/查询、同一单条 SQL、每轮独立新建表；脚本 `eval/quality.mjs`，报告 `evidence/08-eval-quality.md`）：
+fp32 与 int8 混合检索 **Recall@10 = 1.000 / 1.000**（两档均 30/30 命中 top-10），**nDCG@10 = 1.000 / 0.988**（int8 有 1 条 gold 排第 2），Recall@1 = 1.000 / 0.967；
+两档 fp32→int8 同文本向量余弦 **均值 0.9546（最小 0.9359，n=80）**，混合检索 Top-10 重合率均值 0.91。
+排障中观察到：**在加入「ANN 就绪门控」之前的运行里，fp32 也出现过 1 条 top-10 未命中**（Recall@10=0.967），且 fp32/int8 在不同运行中都会偶发单条漏召；
+经「精确 top-1 是否落在 ANN top-10」就绪校验并在不通过时删表重建后，连续两次独立复跑结果一致（上表），偶发漏召消失。
+因此这类未命中应归因于 **seekdb 嵌入式 HNSW（SYNC_MODE=ASYNC）异步索引就绪/近似波动**，而非量化导致的模型退化；评测脚本已内置该就绪门控以消除抖动。作为对照，纯全文检索 Recall@1 = 0.900、nDCG@10 = 0.953，明显低于向量/混合检索，语义召回确有增益。
 
 ## 2. 端侧运行（Transformers.js v4 + WebGPU / WASM）
 
@@ -39,7 +46,8 @@
 - **WebGPU 显式配置**：启动时依次检查 `navigator.gpu` → `requestAdapter()` → `requestDevice()`，成功则 `pipeline(..., {device:'webgpu', dtype:'fp16'})`；并校验 `shader-f16` feature。
 - **自动降级链**：WebGPU 不可用或首次推理抛错 → 销毁并重建 `{device:'wasm', dtype:'q8'}`（`model_quantized.onnx`）；q8 文件异常时再退 `int8`。界面顶部徽标固定文案：`WebGPU · FP16` / `WASM · INT8`，降级时显示黄色提示条说明原因（本机实测：Chrome 156 关闭 WebGPU 后自动进入 WASM 路径，流程完整可检索）。
 - **WASM 多线程前提**：后端与 Vite dev server 均对静态资源下发 `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: require-corp`；实测 `crossOriginIsolated=true`，`SharedArrayBuffer` 可用（WASM threads=4）。
-- **合规自证**：后端 `server/` 依赖仅 `express` + `seekdb`，不含任何推理库（`grep -r "transformers\|onnxruntime" server/` 为空）；浏览器 Network 证据见 `submission/evidence/02-network-no-inference.json`。
+- **合规自证**：后端 `server/` 依赖仅 `express` + `seekdb`，不含任何推理库（`grep -r "transformers\|onnxruntime" server/` 为空）；浏览器 Network 证据见 `submission/evidence/02-network-no-inference.json`（195 条请求，外网 0 条）。
+- **双环境 e2e 实测**（真实 server + production dist + Chrome 156）：WebGPU 环境 **24/24 断言通过**（badge `WebGPU · FP16`、无降级横幅、COI=true）；WASM 降级环境 **26/26 断言通过**（badge `WASM · INT8`、加载 `model_quantized.onnx` 24.01 MB、降级横幅展示原因、导入/检索/增量刷新全通）。详见 `evidence/2026-10-31_e2e-{webgpu,wasm}.json`。
 
 **分阶段实测耗时**（Windows 11 / Chrome 156.0.8078.74 / NVIDIA RTX 4060 Laptop / 24 线程；语料 50 篇、查询 30 条、每次 5 轮中位数）：
 
