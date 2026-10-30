@@ -51,7 +51,7 @@ npm start              # http://127.0.0.1:18270
 
 ### 可选：外部 seekdb server 模式
 
-`env/compose.yaml` 提供 seekdb 容器编排草案（本机无 Docker 未实测），启动后：
+赛题任务目录下的 `env/compose.yaml` 提供 seekdb 容器编排草案（本机无 Docker，未实测；未随本代码仓库分发），若自行部署 seekdb 容器后：
 ```bash
 SEEKDB_MODE=server SEEKDB_HOST=127.0.0.1 SEEKDB_PORT=18270 npm start
 ```
