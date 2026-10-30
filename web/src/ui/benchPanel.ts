@@ -97,7 +97,12 @@ export function setupBenchPanel(root: HTMLElement, runBtn: HTMLButtonElement, ex
       }
       const m = found.model;
       const s = found.summary;
-      const ratioText = m?.compressionRatio != null ? fmtRatio(m.compressionRatio) : found.dtype === 'fp32' ? '基线' : '—';
+      const ratioText =
+        found.dtype === 'fp32'
+          ? '基线'
+          : m?.compressionRatio != null
+            ? fmtRatio(m.compressionRatio)
+            : '—';
       const titleParts: string[] = [];
       if (found.statusReason) titleParts.push(found.statusReason);
       if (m?.loadMs != null) titleParts.push('模型加载 ' + fmtMs(m.loadMs) + (m.warmupMs != null ? ' / 预热 ' + fmtMs(m.warmupMs) : ''));

@@ -2,6 +2,7 @@
 
 import { store } from '../appStore';
 import { el, mount } from '../dom';
+import { backendBadgeText } from './statusBar';
 
 export interface BannerActions {
   retryModel: () => void;
@@ -39,8 +40,16 @@ export function setupBanner(root: HTMLElement, actions: BannerActions): { render
       nodes.push(
         el('div', { class: 'banner', attrs: { 'data-testid': 'fallback-banner' } },
           el('div', { class: 'banner-body' },
-            el('strong', { text: '已自动降级至 ' + (model.backend === 'webgpu' ? 'WebGPU' : 'WASM') + ' · ' + (model.dtype ?? '').toUpperCase() }),
-            el('span', { text: '　原因：' + model.fallbackReason + '。界面与评测均以实际后端为准。' }),
+            el('strong', {
+              text:
+                '已自动降级至 ' +
+                (model.backend && model.dtype ? backendBadgeText(model.backend, model.dtype) : 'WASM'),
+            }),
+            el('span', {
+              text:
+                '　实际加载 ' + (model.info?.onnxFile ?? '') +
+                '；原因：' + model.fallbackReason + '。界面与评测均以实际后端为准。',
+            }),
           ),
           el('div', { class: 'banner-actions' }, retryModelBtn),
         ),

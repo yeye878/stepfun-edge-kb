@@ -296,6 +296,42 @@ async function main() {
   log('DB：' + JSON.stringify(summary.db));
   summary.screenshotHome = await screenshot(cdp, sessionId, '01-home');
 
+  if (args.includes('--hook-test')) {
+    // 验证 APP-CONTRACT v1.1 钩子：无知识库时 importTexts(texts) 自动建默认库
+    log('=== 钩子自测：清空知识库 → 重载页面 → importTexts 自动建库 ===');
+    const kbList = await evaluate('fetch("/api/kbs").then(r => r.json())', true, 30000);
+    for (const kb of kbList.kbs ?? []) {
+      await evaluate('fetch("/api/kbs/' + kb.id + '", {method: "DELETE"}).then(r => r.json())', true, 30000);
+      log('已删除测试知识库 ' + kb.id);
+    }
+    await cdp.send('Page.reload', {}, 30000, sessionId);
+    await new Promise((r) => setTimeout(r, 1200));
+    await evaluate('window.__stepkb.ready()', true, 300000);
+    const emptyState = JSON.parse(await evaluate('JSON.stringify(window.__stepkb.state())'));
+    log('清库后 state()：' + JSON.stringify(emptyState));
+    const hookImport = await evaluate(
+      'window.__stepkb.importTexts(["StepKB 钩子自测文档一：端侧向量化与 seekdb 混合检索。","StepKB 钩子自测文档二：混合检索在库内单条 SQL 完成。"])',
+      true,
+      240000,
+    );
+    log('无库调用 importTexts 返回：' + JSON.stringify(hookImport));
+    const afterState = JSON.parse(await evaluate('JSON.stringify(window.__stepkb.state())'));
+    log('自动建库后 state()：' + JSON.stringify(afterState));
+    summary.hookTest = {
+      emptyStateCurrentKb: emptyState.currentKb ?? null,
+      importResult: hookImport,
+      autoKbActive: afterState.currentKb != null && afterState.currentKb === hookImport.kbId,
+      docCount: afterState.docCount,
+    };
+    summary.screenshotHook = await screenshot(cdp, sessionId, '06-hook-auto-kb');
+    if (!summary.hookTest.autoKbActive || !(hookImport.inserted >= 2)) {
+      throw new Error('钩子自测失败：' + JSON.stringify(summary.hookTest));
+    }
+    log('钩子自测通过：无库 → 自动建库（' + hookImport.kbId + '）→ 导入 ' + hookImport.inserted + ' 篇');
+    summary.ok = true;
+    return summary;
+  }
+
   let kbId = summary.state.currentKb ?? null;
   if (!kbId) {
     kbId = await evaluate('window.__stepkb.createKb("冒烟验证-" + Date.now()).then((kb) => kb.id)', true, 60000);
@@ -303,9 +339,11 @@ async function main() {
   }
   summary.kbId = kbId;
 
-  const corpus = await fetchJson('http://127.0.0.1:18271/data/corpus.json', 15000);
+  const corpusUrl = new URL('/data/corpus.json', PAGE_URL).href;
+  const corpus = await fetchJson(corpusUrl, 15000);
   const corpusArr = Array.isArray(corpus) ? corpus : corpus.docs;
-  const docs = corpusArr.slice(0, 10).map((d) => ({ id: d.id, text: d.text }));
+  const importCount = Math.max(1, Math.min(corpusArr.length, Number(argValue('import-count', '10'))));
+  const docs = corpusArr.slice(0, importCount).map((d) => ({ id: d.id, text: d.text }));
   const importT0 = Date.now();
   const importRes = await evaluate(
     'window.__stepkb.importTexts(' + JSON.stringify(docs) + ', {kb:' + JSON.stringify(kbId) + '})',
@@ -387,6 +425,45 @@ async function main() {
       log('评测完整 JSON 已保存：' + benchFile + '（' + raw.length + ' 字符）');
     } catch (err) {
       log('保存完整评测 JSON 失败：' + (err instanceof Error ? err.message : String(err)));
+    }
+  }
+
+  if (args.includes('--q08')) {
+    // 复测 q08（fp16+WebGPU 下 gold d11 掉出 top-10）：k=20 看 gold 实际排名
+    try {
+      const queriesUrl = new URL('/data/queries.json', PAGE_URL).href;
+      const queriesRaw = await fetchJson(queriesUrl, 15000);
+      const queries = Array.isArray(queriesRaw) ? queriesRaw : queriesRaw.queries;
+      const q08 = queries.find((q) => q.qid === 'q08') || { qid: 'q08', query: '把权重压成 8 位整数后体积能小多少', goldId: 'd11' };
+      const q08Res = await evaluate(
+        'window.__stepkb.search(' + JSON.stringify(q08.query) + ', "hybrid", 20)',
+        true,
+        120000,
+      );
+      const ids = (q08Res.rows ?? []).map((r) => r.id);
+      const rank = ids.indexOf(q08.goldId ?? 'd11');
+      const q08Vector = await evaluate(
+        'window.__stepkb.search(' + JSON.stringify(q08.query) + ', "vector", 20)',
+        true,
+        120000,
+      );
+      const vIds = (q08Vector.rows ?? []).map((r) => r.id);
+      const vRank = vIds.indexOf(q08.goldId ?? 'd11');
+      summary.q08 = {
+        qid: q08.qid,
+        query: q08.query,
+        goldId: q08.goldId ?? 'd11',
+        backend: summary.modelInfo?.backend,
+        dtype: summary.modelInfo?.dtype,
+        hybridK20GoldRank: rank >= 0 ? rank + 1 : -1,
+        hybridK20Top10: ids.slice(0, 10),
+        vectorK20GoldRank: vRank >= 0 ? vRank + 1 : -1,
+        vectorK20Top10: vIds.slice(0, 10),
+        dbMs: q08Res.dbMs,
+      };
+      log('q08 k=20 复测：' + JSON.stringify(summary.q08));
+    } catch (err) {
+      log('q08 复测失败：' + (err instanceof Error ? err.message : String(err)));
     }
   }
 

@@ -29,6 +29,51 @@ export async function openPage({ port, url, viewport = { width: 1440, height: 90
   });
   await cdp.send('Page.enable');
   await cdp.send('Runtime.enable');
+
+  // ---- 网络请求采集（页面 + Web Worker/Service Worker，用 Target.setAutoAttach 自动挂 worker）----
+  const network = [];
+  const byRequestId = new Map();
+  const workerSessions = new Map();
+  cdp.listeners.add((msg) => {
+    if (msg.method === 'Target.attachedToTarget') {
+      const info = msg.params.targetInfo || {};
+      const sid = msg.params.sessionId;
+      if (sid) {
+        workerSessions.set(sid, (info.type || 'worker') + ':' + (info.url || ''));
+        // 子 target 也要开 Network，才能看到 Worker 内部的模型/静态资源请求
+        cdp.send('Network.enable', {}, { sessionId: sid }).catch(() => {});
+      }
+      return;
+    }
+    if (msg.method === 'Network.requestWillBeSent') {
+      const req = msg.params.request || {};
+      const rec = {
+        requestId: msg.params.requestId,
+        session: msg.sessionId || null,
+        source: msg.sessionId ? (workerSessions.get(msg.sessionId) || 'worker') : 'page',
+        method: req.method,
+        url: req.url,
+        type: msg.params.type || null,
+        ts: Date.now(),
+      };
+      network.push(rec);
+      byRequestId.set(msg.params.requestId, rec);
+      return;
+    }
+    if (msg.method === 'Network.responseReceived') {
+      const rec = byRequestId.get(msg.params.requestId);
+      if (rec) {
+        rec.status = msg.params.response ? msg.params.response.status : null;
+        rec.mimeType = msg.params.response ? msg.params.response.mimeType : null;
+        rec.remoteIPAddress = msg.params.response && msg.params.response.remoteIPAddress ? msg.params.response.remoteIPAddress : null;
+      }
+    }
+  });
+  await cdp.send('Network.enable');
+  try {
+    await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+  } catch (e) { /* 老版本不支持时忽略，仅丢 worker 请求 */ }
+
   if (viewport) await cdp.send('Emulation.setDeviceMetricsOverride', { ...viewport, deviceScaleFactor: 1, mobile: false });
   const preloadIds = [];
   for (const source of preloadScripts) {
@@ -86,6 +131,24 @@ export async function openPage({ port, url, viewport = { width: 1440, height: 90
     /** 取页面可见文本（用于状态栏断言与证据）。 */
     async visibleText() {
       return this.evaluate('(document.body && document.body.innerText || "").slice(0, 8000)', { awaitPromise: false });
+    },
+
+    /** 网络请求清单（含 Worker 内请求），用于证明无云端推理 API 调用。 */
+    networkSummary() {
+      const byHost = {};
+      const bySource = {};
+      for (const r of network) {
+        let host = '(opaque)';
+        try { const u = new URL(r.url); host = u.host || '(no-host)'; } catch (e) { /* ignore */ }
+        byHost[host] = (byHost[host] || 0) + 1;
+        bySource[r.source] = (bySource[r.source] || 0) + 1;
+      }
+      return { total: network.length, byHost, bySource, requests: network.slice(0, 500) };
+    },
+
+    /** 把页面元素滚动到视口中间（截图证据用）。 */
+    async scrollTo(selector) {
+      return this.evaluate('(function(){ var el = document.querySelector(' + JSON.stringify(selector) + '); if (!el) return false; el.scrollIntoView({ block: "center" }); return true; })()', { awaitPromise: false, timeoutMs: 10000 });
     },
 
     /** 关闭页面 target（attach 模式下只关自己开的标签页，不影响 Lead 的 Chrome 实例）。 */

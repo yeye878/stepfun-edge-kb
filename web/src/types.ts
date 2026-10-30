@@ -410,6 +410,8 @@ export interface HookImportResult {
   total: number;
   writeMs: number;
   refreshMs: number;
+  /** 实际写入的知识库 id（v1.1：未指定/未选中时自动创建默认验收库） */
+  kbId?: string;
 }
 
 export interface HookSearchResult {

@@ -341,7 +341,7 @@ export async function kbStats(db, kb) {
     docCount: docCount,
     createTableSql: createTableSql,
     indexes: indexes,
-    sampleHybridSql: prettySql(sample.replace(/'\[[^\]]*\]'/, "'[v1,v2,...]'")),
+    sampleHybridSql: prettySql(sample.replace(/'\[[^\]]*\]'/g, "'[v1,v2,...]'")),
   };
 }
 

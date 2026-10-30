@@ -70,6 +70,9 @@ e2e/
 
 ## 5. 运行方式
 
+> 本机当前由 Lead 在沙箱外启动的 Chrome 实例为 **CDP http://127.0.0.1:19223**（profile `e2e/out/chrome-profile-cdp-wasm`）；
+> 下面命令里的 19222 是脚本默认端口，实际跑时用 `--cdp-url http://127.0.0.1:19223`。
+
 ### 5.1 前置：在「沙箱外」启动 Chrome（agent 沙箱内无法启动，见 §2）
 
 普通 PowerShell / 评审机终端：
@@ -139,3 +142,47 @@ WASM 环境：徽标 `data-backend=wasm` / 文本含 `WASM` / `[data-testid=fall
 3. 后端 embedded seekdb 是**单实例锁**（同一 DB 目录同一时刻只能一个进程）；e2e 默认用 `e2e/out/_runtime/seekdb` 独立目录，避免与 dev 实例冲突。`--fresh-db` 会清空该目录（仅测试数据）。
 4. `server/index.mjs` 的 seekdb 原生插件在 Windows 下异常退出可能残留 pid 锁；后端启动时有 stale-lock 自动清理（`server/db.mjs recoverStaleLock`）。e2e 收尾用进程树强杀（`taskkill /T /F`）避免 close_sync 阻塞。
 5. 探测页与应用页的 COOP/COEP 均按后端同款头设置（`same-origin` / `require-corp`），保证 `crossOriginIsolated` 口径一致。
+## 8. 验收结果（2026-10-31 实测，真实后端 + 真实 Chrome）
+
+两环境均为：**真实 server（embedded seekdb，dbMode=embedded，版本 5.7.25-OceanBase seekdb-v1.4.0.0）+ 真实页面（dist 由 server 静态托管）+ attach Lead 在沙箱外启动的 Chrome 156（CDP 127.0.0.1:19223）**。
+
+| 环境 | 命令 | 结果 | 关键证据 |
+| --- | --- | --- | --- |
+| WebGPU（真实） | `node e2e/run.mjs --env webgpu --cdp-url http://127.0.0.1:19223 --port 18278` | **exit=0，passed=24 failed=0** | badge `WebGPU · FP16`；adapter nvidia/lovelace，device ✅；crossOriginIsolated=true；无降级横幅；导入 50 篇（向量化 337.8ms，写入 952.0ms，refresh 142ms）；混合检索 5 行（查询向量化 21.6ms / seekdb SQL 14.0ms / 端到端 43.1ms）；单条 SQL 含 MATCH + l2_distance APPROXIMATE |
+| WASM 降级（CDP 注入隐藏 navigator.gpu） | `node e2e/run.mjs --env wasm --cdp-url http://127.0.0.1:19223 --port 18278` | **exit=0，passed=26 failed=0** | badge `WASM · INT8`（data-backend=wasm, dtype=q8）；`[data-testid=fallback-banner]` 显示「已自动降级至 WASM · INT8，实际加载 onnx/model_quantized.onnx；原因：navigator.gpu 不存在」；q8 模型 24,010,842 B、压缩比 3.95×、WASM 线程 4；导入/混合检索/增量刷新全流程通过 |
+
+两环境均通过：后端真实 seekdb（非 MOCK）、KB dim=512、FULLTEXT+VECTOR 索引存在、增量导入第二批 + refresh 后第二批可检索（06-refresh）、网络请求 0 条外网/跨域（02-network）、页面无未捕获异常。
+
+### 8.1 证据文件（submission/evidence/）
+
+| 文件 | 说明 |
+| --- | --- |
+| `01-e2e-import.png` / `01-e2e-import-wasm.png` | 导入 50 篇后的界面：本次写入 50 篇、向量化/写入/刷新耗时、DDL（FULLTEXT+VECTOR 索引）、docCount |
+| `01-e2e-search.png` / `01-e2e-search-wasm.png` | 混合检索结果：排名/原文/score/distance、阶段耗时（查询向量化/seekdb SQL/HTTP 往返/端到端）、单条 SQL 折叠 |
+| `04-webgpu.png` | 状态栏特写：`WebGPU · FP16`、模型 bge-small-zh-v1.5 · 512 维 · 47.50 MB · 压缩比 2.00×、seekdb embedded |
+| `04-wasm-fallback.png` | 状态栏 + 降级横幅特写：`WASM · INT8`、自动降级原因（navigator.gpu 不存在） |
+| `02-network-no-inference.json/.md`（及 `-wasm` 版） | 全流程网络请求清单（含页面与 Worker）：仅 127.0.0.1:18278 + 无 host（data:/blob:），**外网/跨域 0 条** |
+| `05-db-evidence.txt`（及 `-wasm` 版） | /api/db/info、KB 信息、SHOW CREATE TABLE、SHOW INDEX、单条混合检索 SQL 模板 + 实际执行 SQL + 阶段耗时 |
+| `06-refresh.json`（及 `-wasm` 版） | 增量导入第二批（2 篇）→ refresh → 全文检索命中记录、docCount 50→52 |
+| `03-benchmark.json` | 页面评测面板（3 配置 × 5 次）结果（跑 `--benchmark` 时产出） |
+| `e2e/out/run-*/summary.json` | 每次运行的完整断言与数据结构 |
+| `outputs/logs/2026-10-31_e2e-{webgpu,wasm}.{log,json}` | 运行日志与 summary 副本 |
+
+## 9. 基准（评测面板）
+
+```bash
+node e2e/run.mjs --env webgpu --cdp-url http://127.0.0.1:19223 --port 18278 --benchmark --bench-runs 1
+# 产出 submission/evidence/03-benchmark.json（页面 ==window.__stepkb.runBenchmark({runs})== 的返回）
+# 注意：评测会依次加载 3 档模型（FP32/WASM、FP16/WebGPU、INT8/WASM），耗时较长；--bench-runs 控制每配置次数
+```### 8.2 评测面板（03-benchmark.json，webgpu 环境，runs=1，`--benchmark --bench-runs 1`）
+
+页面评测面板 `window.__stepkb.runBenchmark({runs:1})` 的实测（50 篇语料 / 30 条查询 / 混合检索 k=10）：
+
+| 配置 | ONNX 体积 | 压缩比 | 加载 | 语料向量化吞吐 | Recall@10 | nDCG@10 | 端到端中位 | seekdb SQL 中位 | 查询向量化中位 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| FP32 + WASM | 94,851,877 B（94.85 MB） | 1.000× | 1149 ms | 10.43 篇/s | 0.9667 | 0.9667 | 28.74 ms | 4 ms | 18.18 ms |
+| FP16 + WebGPU | 47,497,427 B（47.50 MB） | 1.997× | 1141 ms | **43.87 篇/s** | **1.0000** | **1.0000** | **19.63 ms** | 4 ms | **9.96 ms** |
+| INT8 + WASM | 23,903,394 B（23.90 MB） | **3.968×** | **497 ms** | 11.86 篇/s | **1.0000** | 0.9877 | 40.57 ms | 5 ms | 26.54 ms |
+
+> 环境：Chrome 156 / NVIDIA RTX 4060 Laptop / crossOriginIsolated=true；详细逐条查询结果见 `submission/evidence/03-benchmark.json`。
+> 注：本次 runs=1 用于 e2e 可复现对照，正式基准见 eval-data 的 `outputs/logs/2026-10-31_final-benchmark.json`（3 配置 × 5 次）。

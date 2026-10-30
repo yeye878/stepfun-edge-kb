@@ -65,6 +65,7 @@ export function setupImportPanel(root: HTMLElement): { render: () => void } {
   let pending: ImportInputItem[] = [];
   let pendingSource = '';
   let showCreate = false;
+  let autoOpenedCreate = false;
   let localError: string | null = null;
 
   /* ---------- 静态骨架 ---------- */
@@ -157,6 +158,7 @@ export function setupImportPanel(root: HTMLElement): { render: () => void } {
 
   btnNew.addEventListener('click', () => {
     showCreate = !showCreate;
+    autoOpenedCreate = false;
     if (showCreate) {
       createRow.classList.remove('hidden');
       createInput.focus();
@@ -181,6 +183,7 @@ export function setupImportPanel(root: HTMLElement): { render: () => void } {
       const kb = await createKb(name);
       createInput.value = '';
       showCreate = false;
+      autoOpenedCreate = false;
       createRow.classList.add('hidden');
       toast('知识库已就绪：' + kb.name, 'ok');
     } catch (err) {
@@ -381,7 +384,13 @@ export function setupImportPanel(root: HTMLElement): { render: () => void } {
 
     if (store.kbs.length === 0 && !showCreate) {
       showCreate = true;
+      autoOpenedCreate = true;
       createRow.classList.remove('hidden');
+    } else if (store.kbs.length > 0 && showCreate && autoOpenedCreate) {
+      // 有知识库后自动收起「新建」表单（用户手动打开的保持显示）
+      showCreate = false;
+      autoOpenedCreate = false;
+      createRow.classList.add('hidden');
     }
   }
 

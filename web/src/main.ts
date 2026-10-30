@@ -188,6 +188,22 @@ function currentKbId(ref?: string | null): string {
   return resolveKb(ref ?? null).id;
 }
 
+/** v1.1 钩子：未指定且未选中知识库时，自动创建并选中一个默认验收库（e2e 依赖）。 */
+async function ensureHookKb(ref?: string | null): Promise<string> {
+  if (ref) return currentKbId(ref);
+  const active = store.activeKb();
+  if (active) return active.id;
+  const preferredName = '验收知识库';
+  const existing = store.kbs.find((kb) => kb.name === preferredName);
+  if (existing) {
+    store.setActiveKb(existing.id);
+    return existing.id;
+  }
+  store.log('info', '当前没有选中知识库，自动创建默认验收库：' + preferredName, undefined, 'db');
+  const kb = await services.createKb(preferredName);
+  return kb.id;
+}
+
 function summaryState(): StepKbSummaryState {
   const kb = store.activeKb();
   return {
@@ -215,7 +231,7 @@ async function hookImportTexts(arg0: unknown, arg1?: unknown): Promise<HookImpor
     return summary;
   }
   const opts = (arg1 ?? {}) as { kb?: string };
-  const kbId = currentKbId(opts.kb ?? null);
+  const kbId = await ensureHookKb(opts.kb ?? null);
   const texts = Array.isArray(arg0) ? (arg0 as Array<string | { id?: string; text: string }>) : [];
   const summary = await services.importTexts(kbId, texts);
   const result: HookImportResult = {
@@ -223,6 +239,7 @@ async function hookImportTexts(arg0: unknown, arg1?: unknown): Promise<HookImpor
     total: summary.docs,
     writeMs: summary.writeMs,
     refreshMs: summary.refreshMs,
+    kbId,
   };
   return result;
 }
@@ -252,7 +269,12 @@ async function hookSearch(
     });
     return { response: view.response, timings: view.timings };
   }
-  const kbId = currentKbId(null);
+  let kbId: string;
+  try {
+    kbId = currentKbId(null);
+  } catch {
+    throw new Error('当前没有选中的知识库：请先调用 __stepkb.importTexts(texts)（会自动建库）或 __stepkb.createKb(name)');
+  }
   const mode = (typeof arg1 === 'string' ? arg1 : 'hybrid') as SearchMode;
   const view = await services.search(kbId, {
     mode,
