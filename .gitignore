@@ -1,0 +1,12 @@
+node_modules/
+dist/
+web/public/models/
+_runtime/
+_runtime*/
+e2e/out/
+e2e/_diag-*
+*.db
+*.log
+.env
+.env.*
+!.env.example

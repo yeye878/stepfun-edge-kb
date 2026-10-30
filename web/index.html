@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232158d6'/%3E%3Ctext x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-family='sans-serif'%3E%E2%97%88%3C/text%3E%3C/svg%3E"
+    />
+    <title>StepKB · 端侧迷你知识库</title>
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">◈</div>
+          <div class="brand-text">
+            <h1>StepKB</h1>
+            <p>端侧迷你知识库 · 浏览器本地向量化 · seekdb 混合检索</p>
+          </div>
+        </div>
+        <div class="status-strip" id="status-strip" data-testid="status-bar" aria-live="polite"></div>
+      </header>
+
+      <div id="banner-slot"></div>
+
+      <main class="grid">
+        <section class="panel panel-import" id="panel-import">
+          <header class="panel-head">
+            <div>
+              <h2>导入</h2>
+              <p class="hint">浏览器内向量化 → 批量写入 seekdb</p>
+            </div>
+            <span class="panel-flag" id="import-kb-flag">未选择知识库</span>
+          </header>
+          <div class="panel-body" id="import-body"></div>
+        </section>
+
+        <section class="panel panel-search" id="panel-search">
+          <header class="panel-head">
+            <div>
+              <h2>检索</h2>
+              <p class="hint">单条 SQL 内完成全文过滤 + 向量排序</p>
+            </div>
+            <span class="panel-flag" id="search-mode-flag"></span>
+          </header>
+          <div class="panel-body" id="search-body"></div>
+        </section>
+
+        <section class="panel panel-data" id="panel-data">
+          <header class="panel-head">
+            <div>
+              <h2>数据层</h2>
+              <p class="hint">seekdb 表结构 / 索引 / 刷新</p>
+            </div>
+            <button class="btn btn-ghost btn-sm" id="btn-refresh-index" data-testid="refresh-button" type="button">刷新索引</button>
+          </header>
+          <div class="panel-body" id="data-body"></div>
+        </section>
+
+        <section class="panel panel-bench" id="panel-bench">
+          <header class="panel-head">
+            <div>
+              <h2>评测</h2>
+              <p class="hint">3 种量化/后端配置 × 5 次检索 · Recall@10 / nDCG@10</p>
+            </div>
+            <div class="panel-actions">
+              <button class="btn btn-ghost btn-sm" id="btn-bench-export" type="button" disabled>导出 JSON</button>
+              <button class="btn btn-primary btn-sm" id="btn-bench-run" data-testid="benchmark-run" type="button">运行评测</button>
+            </div>
+          </header>
+          <div class="panel-body" id="bench-body"></div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span>端侧推理：向量由浏览器本地计算，后端只做 SQL 转发（不接收文本推理请求）。</span>
+        <span id="footer-env" class="mono"></span>
+      </footer>
+    </div>
+
+    <div id="toast-root" class="toast-root" aria-live="polite"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

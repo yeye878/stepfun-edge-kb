@@ -1,0 +1,31 @@
+{
+  "name": "stepfun-edge-kb",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端侧推理 + seekdb 混合检索的迷你知识库（赛题27）",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "fetch:models": "node scripts/fetch-models.mjs",
+    "dev:server": "node server/index.mjs",
+    "dev:web": "node web/dev/vite-run.mjs serve",
+    "build": "node web/dev/vite-run.mjs build",
+    "start": "node server/index.mjs",
+    "verify:db": "node scripts/verify-db.mjs",
+    "eval:quality": "node eval/quality.mjs",
+    "e2e": "node e2e/run.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "4.3.2",
+    "express": "5.3.0",
+    "seekdb": "1.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "playwright": "1.64.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  }
+}

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>StepKB 浏览器能力探测</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 18px 22px 26px; background: #0f1419; color: #e6e6e6;
+         font: 13px/1.5 "Cascadia Mono", Consolas, "Microsoft YaHei", monospace; }
+  h1 { font-size: 20px; margin: 0 0 4px; color: #7ee787; font-weight: 600; }
+  .sub { color: #8b949e; margin-bottom: 14px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-weight: 700; font-size: 12px; }
+  .badge.ok { background: #1f6f43; color: #b7f7c8; }
+  .badge.bad { background: #7a2a2a; color: #ffc9c9; }
+  .badge.warn { background: #7a5a1a; color: #ffe9b0; }
+  table { border-collapse: collapse; width: 100%; max-width: 1180px; }
+  td { border-bottom: 1px solid #21262d; padding: 4px 8px; vertical-align: top; }
+  td.k { color: #79c0ff; width: 250px; white-space: nowrap; }
+  td.v { color: #e6edf3; word-break: break-all; }
+  .section { margin: 16px 0 6px; color: #d2a8ff; font-weight: 700; }
+  #verdict { margin: 12px 0; padding: 10px 12px; border-radius: 8px; background: #161b22; border: 1px solid #30363d; }
+</style>
+</head>
+<body>
+<h1>StepKB 浏览器能力探测</h1>
+<div class="sub">配置：<span id="label">(loading)</span> · 由 e2e/probe-browser.mjs 通过 CDP 驱动</div>
+<div id="verdict">检测中…</div>
+<div class="section">运行时环境</div>
+<table id="t-env"></table>
+<div class="section">WebGPU（navigator.gpu）</div>
+<table id="t-gpu"></table>
+<div class="section">WebGL / WASM / 其他</div>
+<table id="t-misc"></table>
+
+<script>
+(() => {
+  const label = new URLSearchParams(location.search).get('label') || '(default)';
+  document.getElementById('label').textContent = label;
+  const out = { label, ua: navigator.userAgent, isSecureContext: self.isSecureContext };
+
+  function row(tableId, k, v, cls) {
+    const tr = document.createElement('tr');
+    const td1 = document.createElement('td'); td1.className = 'k'; td1.textContent = k;
+    const td2 = document.createElement('td'); td2.className = 'v';
+    if (cls === 'ok') { const b = document.createElement('span'); b.className = 'badge ok'; b.textContent = 'YES'; td2.appendChild(b); td2.appendChild(document.createTextNode(' ' + v)); }
+    else if (cls === 'bad') { const b = document.createElement('span'); b.className = 'badge bad'; b.textContent = 'NO'; td2.appendChild(b); td2.appendChild(document.createTextNode(' ' + v)); }
+    else if (cls === 'warn') { const b = document.createElement('span'); b.className = 'badge warn'; b.textContent = 'WARN'; td2.appendChild(b); td2.appendChild(document.createTextNode(' ' + v)); }
+    else { td2.textContent = v; }
+    tr.appendChild(td1); tr.appendChild(td2);
+    document.getElementById(tableId).appendChild(tr);
+  }
+  const val = (v) => (v === undefined || v === null) ? String(v) : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+
+  async function main() {
+    // ---- 环境 ----
+    out.hardwareConcurrency = navigator.hardwareConcurrency;
+    out.deviceMemory = navigator.deviceMemory ?? null;
+    out.crossOriginIsolated = self.crossOriginIsolated;
+    out.hasSharedArrayBuffer = typeof SharedArrayBuffer !== 'undefined';
+    out.platform = navigator.platform || navigator.userAgentData?.platform || '';
+    const m = /Chrome\/(\d+)\.([\d.]+)/.exec(navigator.userAgent);
+    out.chromeVersion = m ? m[1] + '.' + m[2] : null;
+    out.userAgentData = navigator.userAgentData ? { brands: navigator.userAgentData.brands, mobile: navigator.userAgentData.mobile, platform: navigator.userAgentData.platform } : null;
+    row('t-env', 'label', out.label);
+    row('t-env', 'UA', out.ua);
+    row('t-env', 'Chrome 版本（UA 解析）', out.chromeVersion || '未识别', out.chromeVersion ? 'ok' : 'bad');
+    row('t-env', 'isSecureContext（WebGPU 前提）', val(out.isSecureContext), out.isSecureContext ? 'ok' : 'bad');
+    row('t-env', 'crossOriginIsolated（WASM 多线程前提）', val(out.crossOriginIsolated), out.crossOriginIsolated ? 'ok' : 'warn');
+    row('t-env', 'SharedArrayBuffer', val(out.hasSharedArrayBuffer), out.hasSharedArrayBuffer ? 'ok' : 'warn');
+    row('t-env', 'hardwareConcurrency', val(out.hardwareConcurrency));
+    row('t-env', 'deviceMemory(GB)', val(out.deviceMemory));
+
+    // ---- WebGPU ----
+    out.gpu = { present: !!navigator.gpu };
+    if (navigator.gpu) {
+      const t0 = performance.now();
+      try {
+        const adapter = await navigator.gpu.requestAdapter();
+        out.gpu.requestAdapterMs = Math.round((performance.now() - t0) * 10) / 10;
+        out.gpu.adapter = !!adapter;
+        if (adapter) {
+          out.gpu.isFallbackAdapter = adapter.isFallbackAdapter ?? null;
+          if (adapter.info) {
+            out.gpu.info = {};
+            for (const k of ['vendor', 'architecture', 'device', 'description', 'subgroupMinSize', 'subgroupMaxSize']) {
+              if (adapter.info[k] !== undefined) out.gpu.info[k] = adapter.info[k];
+            }
+          }
+          out.gpu.features = Array.from(adapter.features);
+          out.gpu.limits = {};
+          for (const k of ['maxBufferSize', 'maxStorageBufferBindingSize', 'maxComputeWorkgroupStorageSize', 'maxComputeInvocationsPerWorkgroup']) {
+            try { out.gpu.limits[k] = adapter.limits[k]; } catch (e) { /* ignore */ }
+          }
+          const td = performance.now();
+          try {
+            const device = await adapter.requestDevice();
+            out.gpu.requestDeviceMs = Math.round((performance.now() - td) * 10) / 10;
+            out.gpu.device = !!device;
+            out.gpu.deviceFeatures = Array.from(device.features || []).slice(0, 12);
+            try { device.destroy(); } catch (e) { /* ignore */ }
+          } catch (e) {
+            out.gpu.device = false;
+            out.gpu.deviceError = String(e && e.message || e);
+          }
+        }
+      } catch (e) {
+        out.gpu.requestAdapterError = String(e && e.message || e);
+      }
+    }
+    const gpu = out.gpu;
+    const gpuOk = gpu.present && gpu.adapter && gpu.device;
+    row('t-gpu', 'navigator.gpu 存在', val(gpu.present), gpu.present ? 'ok' : 'bad');
+    row('t-gpu', 'requestAdapter()', gpu.adapter ? '返回 adapter' : ('null' + (gpu.requestAdapterError ? ' / 错误: ' + gpu.requestAdapterError : '')), gpu.adapter ? 'ok' : 'bad');
+    if (gpu.adapter) {
+      row('t-gpu', '用时 requestAdapter', (gpu.requestAdapterMs ?? '?') + ' ms');
+      const fallbackText = (gpu.isFallbackAdapter === null || gpu.isFallbackAdapter === undefined)
+        ? 'null（未提供；非软件回退适配器）'
+        : String(gpu.isFallbackAdapter);
+      row('t-gpu', 'isFallbackAdapter（CPU 软渲染）', fallbackText, gpu.isFallbackAdapter === true ? 'warn' : (gpu.isFallbackAdapter === false ? 'ok' : ''));
+      const info = gpu.info || {};
+      row('t-gpu', 'adapter.info.vendor', val(info.vendor));
+      row('t-gpu', 'adapter.info.architecture', val(info.architecture));
+      row('t-gpu', 'adapter.info.device', val(info.device));
+      row('t-gpu', 'adapter.info.description', val(info.description));
+      row('t-gpu', 'limits', val(gpu.limits));
+      row('t-gpu', 'features', val(gpu.features));
+      row('t-gpu', 'requestDevice()', gpu.device ? ('成功 ' + (gpu.requestDeviceMs ?? '?') + ' ms') : ('失败: ' + (gpu.deviceError || '?')), gpu.device ? 'ok' : 'bad');
+    }
+    row('t-gpu', 'WebGPU 结论（可用 = adapter + device）', gpuOk ? '可用' : '不可用，应走 WASM 降级', gpuOk ? 'ok' : 'bad');
+
+    // ---- WebGL ----
+    const canvas = document.createElement('canvas');
+    canvas.width = 64; canvas.height = 64;
+    let gl = null;
+    try { gl = canvas.getContext('webgl2') || canvas.getContext('webgl'); } catch (e) { out.webglError = String(e); }
+    if (gl) {
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      out.webgl = {
+        api: gl instanceof WebGL2RenderingContext ? 'WebGL2' : 'WebGL1',
+        version: gl.getParameter(gl.VERSION),
+        shadingLanguageVersion: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+        vendor: gl.getParameter(gl.VENDOR),
+        renderer: gl.getParameter(gl.RENDERER),
+        unmaskedVendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : null,
+        unmaskedRenderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : null,
+      };
+    }
+    if (out.webgl) {
+      row('t-misc', 'WebGL 后端', out.webgl.api + ' / ' + out.webgl.version);
+      row('t-misc', 'WebGL VENDOR', out.webgl.vendor);
+      row('t-misc', 'WebGL RENDERER', out.webgl.renderer);
+      row('t-misc', 'WebGL UNMASKED', val({ vendor: out.webgl.unmaskedVendor, renderer: out.webgl.unmaskedRenderer }));
+    } else {
+      row('t-misc', 'WebGL 后端', '不可用 ' + (out.webglError || ''), 'bad');
+    }
+
+    // ---- WASM ----
+    out.wasm = { simd: false, threads: typeof SharedArrayBuffer !== 'undefined' };
+    try {
+      out.wasm.simd = WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,123,3,2,1,0,10,10,1,8,0,65,0,253,15,253,98,11]));
+    } catch (e) { /* ignore */ }
+    row('t-misc', 'WASM 可用', val(typeof WebAssembly === 'object'), 'ok');
+    row('t-misc', 'WASM SIMD', val(out.wasm.simd), out.wasm.simd ? 'ok' : 'warn');
+    row('t-misc', 'WASM threads(SAB)', val(out.wasm.threads), out.wasm.threads ? 'ok' : 'warn');
+
+    const v = document.getElementById('verdict');
+    v.innerHTML = '';
+    const b = document.createElement('span');
+    b.className = 'badge ' + (gpuOk ? 'ok' : 'bad');
+    b.textContent = gpuOk ? 'WebGPU 可用' : 'WebGPU 不可用';
+    v.appendChild(b);
+    const txt = document.createElement('span');
+    txt.textContent = gpuOk
+      ? '  → 本配置可作「WebGPU 环境」，前端应使用 WebGPU · FP16 后端。'
+      : '  → 本配置应触发前端自动降级到 WASM · INT8，界面须显示降级提示。';
+    v.appendChild(txt);
+    window.__probe = out;
+  }
+  window.__probePromise = main().catch((e) => { window.__probe = { label, fatal: String(e && e.stack || e) }; });
+})();
+</script>
+</body>
+</html>
